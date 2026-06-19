@@ -1,7 +1,7 @@
 const dns = require("node:dns");
 dns.setServers(["8.8.8.8", "8.8.4.4"]);
 
-require(dotenv).config();
+require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const PORT = process.env.PORT || 5000;
@@ -65,8 +65,42 @@ async function run() {
     await client.connect();
 
     //database and collection
-    const db = client.db("zenithfit");
+    const db = client.db("zenithFit");
     const userCollection = db.collection("user");
+    const classesCollection = db.collection("classes");
+
+    //classes api
+
+    app.post("/api/classes", async (req, res) => {
+      const newClass = req.body;
+      const result = await classesCollection.insertOne(newClass);
+      res.send(result);
+    });
+
+    const { ObjectId } = require("mongodb");
+
+    // Get all
+    app.get("/api/classes", async (req, res) => {
+      const result = await classesCollection.find().toArray();
+      res.send(result);
+    });
+
+    // Update Status
+    app.patch("/api/classes/status/:id", async (req, res) => {
+      const result = await classesCollection.updateOne(
+        { _id: new ObjectId(req.params.id) },
+        { $set: { status: req.body.status } },
+      );
+      res.send(result);
+    });
+
+    // Delete
+    app.delete("/api/classes/:id", async (req, res) => {
+      const result = await classesCollection.deleteOne({
+        _id: new ObjectId(req.params.id),
+      });
+      res.send(result);
+    });
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
