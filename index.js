@@ -72,13 +72,40 @@ async function run() {
     const bookingCollection = db.collection("booking");
     const favoritesCollection = db.collection("favorites");
 
+    // BOOKING DATA
+    app.get("/api/my-bookings/:email", async (req, res) => {
+      try {
+        const email = req.params.email;
+        // bookingCollection থেকে ওই ইমেইলের সব বুকিং খুঁজে বের করা
+        const myBookings = await bookingCollection
+          .find({ email: email })
+          .toArray();
+        res.send(myBookings);
+      } catch (error) {
+        res.status(500).send({ error: "Failed to fetch bookings" });
+      }
+    });
+
+    //favorite api
+    app.get("/api/my-favorites/:email", async (req, res) => {
+      try {
+        const email = req.params.email;
+        const favorites = await favoritesCollection
+          .find({ email: email })
+          .toArray();
+        res.send(favorites);
+      } catch (error) {
+        res.status(500).send({ error: "Failed to fetch favorites" });
+      }
+    });
+
     // ২. ইউজারের স্ট্যাটাস চেক (Booking & Favorite)
     app.get("/api/user-class-status", async (req, res) => {
       try {
         const { email, classId } = req.query;
 
         // Bookings collection থেকে চেক
-        const booking = await bookingsCollection.findOne({ email, classId });
+        const booking = await bookingCollection.findOne({ email, classId });
         // Favorites collection থেকে চেক
         const favorite = await favoritesCollection.findOne({ email, classId });
 
