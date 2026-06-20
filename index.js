@@ -7,6 +7,7 @@ const cors = require("cors");
 const PORT = process.env.PORT || 5000;
 const { createRemoteJWKSet, jwtVerify } = require("jose-cjs");
 const app = express();
+const { ObjectId } = require("mongodb");
 
 app.use(
   cors({
@@ -68,16 +69,60 @@ async function run() {
     const db = client.db("zenithFit");
     const userCollection = db.collection("user");
     const classesCollection = db.collection("classes");
+    const bookingCollection = db.collection("booking");
+    const favoritesCollection = db.collection("favorites");
 
-    //classes api
+    // ২. ইউজারের স্ট্যাটাস চেক (Booking & Favorite)
+    app.get("/api/user-class-status", async (req, res) => {
+      try {
+        const { email, classId } = req.query;
 
-    app.post("/api/classes", async (req, res) => {
-      const newClass = req.body;
-      const result = await classesCollection.insertOne(newClass);
-      res.send(result);
+        // Bookings collection থেকে চেক
+        const booking = await bookingsCollection.findOne({ email, classId });
+        // Favorites collection থেকে চেক
+        const favorite = await favoritesCollection.findOne({ email, classId });
+
+        res.send({
+          isBooked: !!booking,
+          isFavorited: !!favorite,
+        });
+      } catch (error) {
+        res.status(500).send({ error: "Failed to check status" });
+      }
     });
 
-    const { ObjectId } = require("mongodb");
+    // ৩. ফেভারিট টগল করা (Add / Remove)
+    app.post("/api/favorites/toggle", async (req, res) => {
+      try {
+        const { email, classId, classData } = req.body;
+        const query = { email, classId };
+
+        const existing = await favoritesCollection.findOne(query);
+
+        if (existing) {
+          await favoritesCollection.deleteOne(query);
+          return res.send({
+            status: "removed",
+            message: "Removed from favorites",
+          });
+        } else {
+          await favoritesCollection.insertOne({
+            email,
+            classId,
+            classData,
+            addedAt: new Date(),
+          });
+          return res.send({
+            status: "added",
+            message: "Successfully added to your favorites!",
+          });
+        }
+      } catch (error) {
+        res.status(500).send({ error: "Failed to toggle favorite" });
+      }
+    });
+
+    //classes api
 
     // Get all
     app.get("/api/classes", async (req, res) => {
@@ -113,6 +158,36 @@ async function run() {
         res.status(500).send({ message: "Internal Server Error" });
       }
     });
+
+    //get id api
+    // সিঙ্গেল ক্লাসের ডিটেইলস আনার API
+    app.get("/api/classes/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+
+        // আইডি দিয়ে ডাটাবেস থেকে খোঁজা
+        const query = { _id: new ObjectId(id) };
+        const result = await classesCollection.findOne(query);
+
+        // যদি ডাটা না পায়
+        if (!result) {
+          return res.status(404).send({ message: "Class not found" });
+        }
+
+        res.send(result);
+      } catch (error) {
+        console.error("Error details:", error);
+        res.status(500).send({ message: "Internal server error" });
+      }
+    });
+
+    // post api
+    app.post("/api/classes", async (req, res) => {
+      const newClass = req.body;
+      const result = await classesCollection.insertOne(newClass);
+      res.send(result);
+    });
+
     // Update Status
     app.patch("/api/classes/status/:id", async (req, res) => {
       const result = await classesCollection.updateOne(
