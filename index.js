@@ -81,10 +81,38 @@ async function run() {
 
     // Get all
     app.get("/api/classes", async (req, res) => {
-      const result = await classesCollection.find().toArray();
-      res.send(result);
-    });
+      // ফ্রন্টএন্ড থেকে আসা ডাটাগুলো রিসিভ করা (limit 9 করা হয়েছে)
+      const { search, category, page = 1, limit = 9 } = req.query;
+      const skip = (parseInt(page) - 1) * parseInt(limit);
 
+      // ডিফল্ট কোয়েরি (শুধু Approved ক্লাস)
+      let query = { status: "Approved" };
+
+      // ১. Search Logic (Empty string এবং Case-Insensitive ফিক্স)
+      if (search && search.trim() !== "") {
+        query.name = { $regex: search.trim(), $options: "i" };
+      }
+
+      // ২. Category Logic (Case-Insensitive ফিক্স)
+      if (category && category !== "all" && category.trim() !== "") {
+        // ডাটাবেসে "yoga", "Yoga", "YOGA" যাই থাকুক না কেন, এটি ম্যাচ করবে
+        query.category = { $regex: new RegExp(`^${category.trim()}$`, "i") };
+      }
+
+      try {
+        const total = await classesCollection.countDocuments(query);
+        const classes = await classesCollection
+          .find(query)
+          .skip(skip)
+          .limit(parseInt(limit))
+          .toArray();
+
+        res.send({ classes, totalPages: Math.ceil(total / limit) });
+      } catch (error) {
+        console.error("Error fetching classes:", error);
+        res.status(500).send({ message: "Internal Server Error" });
+      }
+    });
     // Update Status
     app.patch("/api/classes/status/:id", async (req, res) => {
       const result = await classesCollection.updateOne(
