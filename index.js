@@ -72,6 +72,21 @@ async function run() {
     const bookingCollection = db.collection("booking");
     const favoritesCollection = db.collection("favorites");
     const trainerCollection = db.collection("trainerApplication");
+    const forumCollection = db.collection("forum");
+
+    // forum api
+    app.post("/api/forum", async (req, res) => {
+      try {
+        const postData = req.body;
+        const result = await forumCollection.insertOne({
+          ...postData,
+          createdAt: new Date(),
+        });
+        res.status(201).send(result);
+      } catch (error) {
+        res.status(500).send({ error: "Failed to publish post" });
+      }
+    });
 
     // user overview page
     app.get("/api/user-stats/:email", async (req, res) => {
@@ -296,6 +311,26 @@ async function run() {
         _id: new ObjectId(req.params.id),
       });
       res.send(result);
+    });
+
+    // ট্রেইনারের সব ক্লাস এবং স্ট্যাটাস সামারি
+    app.get("/api/trainer/my-classes/:email", async (req, res) => {
+      try {
+        const email = req.params.email;
+        const myClasses = await classesCollection
+          .find({ trainerEmail: email })
+          .toArray();
+
+        // স্ট্যাটাস কাউন্ট
+        const pending = myClasses.filter((c) => c.status === "Pending").length;
+        const approved = myClasses.filter(
+          (c) => c.status === "Approved",
+        ).length;
+
+        res.json({ classes: myClasses, pending, approved });
+      } catch (error) {
+        res.status(500).send({ error: "Failed to fetch classes" });
+      }
     });
 
     // Send a ping to confirm a successful connection
