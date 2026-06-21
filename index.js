@@ -71,6 +71,72 @@ async function run() {
     const classesCollection = db.collection("classes");
     const bookingCollection = db.collection("booking");
     const favoritesCollection = db.collection("favorites");
+    const trainerCollection = db.collection("trainerApplication");
+
+    // user overview page
+    app.get("/api/user-stats/:email", async (req, res) => {
+      try {
+        const email = req.params.email;
+        const booked = await bookingCollection.countDocuments({ email });
+        const favorites = await favoritesCollection.countDocuments({ email });
+        const trainerApp = await trainerCollection.findOne({ email });
+
+        res.json({ booked, favorites, trainerApp });
+      } catch (error) {
+        res.status(500).json({ error: "Failed to fetch stats" });
+      }
+    });
+
+    //trainer api
+    app.get("/api/check-trainer-status/:email", async (req, res) => {
+      const status = await trainerCollection.findOne({
+        email: req.params.email,
+      });
+      res.json(status || {});
+    });
+
+    // ২. ট্রেইনার অ্যাপ্লিকেশন সাবমিশন (Logic Updated)
+    app.post("/api/trainer-application", async (req, res) => {
+      try {
+        const { email } = req.body;
+        const existing = await trainerCollection.findOne({ email });
+
+        // যদি অলরেডি পেন্ডিং থাকে, তবে রিজেক্ট করুন
+        if (existing && existing.status === "Pending") {
+          return res
+            .status(400)
+            .json({ error: "Already applied. Please wait." });
+        }
+
+        // যদি রিজেক্টেড হয়, আগেরটি ডিলিট করে নতুনটা ইনসার্ট করুন
+        if (existing && existing.status === "Rejected") {
+          await trainerCollection.deleteOne({ email });
+        }
+
+        const application = {
+          ...req.body,
+          status: "Pending",
+          appliedAt: new Date(),
+        };
+        const result = await trainerCollection.insertOne(application);
+        res.status(201).send(result);
+      } catch (error) {
+        res.status(500).send({ error: "Server error" });
+      }
+    });
+
+    // // ২. অ্যাডমিন প্যানেলে ট্রেইনার অ্যাপ্রুভ করার জন্য এই রাউটটি যোগ করুন
+    // app.patch("/api/approve-trainer/:email", async (req, res) => {
+    //   const email = req.params.email;
+    //   // ট্রেইনার স্ট্যাটাস আপডেট
+    //   await trainerCollection.updateOne(
+    //     { email },
+    //     { $set: { status: "Approved" } },
+    //   );
+    //   // ইউজারের রোল আপডেট
+    //   await userCollection.updateOne({ email }, { $set: { role: "trainer" } });
+    //   res.send({ message: "Role updated to trainer" });
+    // });
 
     // BOOKING DATA
     app.get("/api/my-bookings/:email", async (req, res) => {
@@ -237,6 +303,8 @@ async function run() {
     console.log(
       "Pinged your deployment. You successfully connected to MongoDB!",
     );
+  } catch (err) {
+    console.error(err);
   } finally {
     // Ensures that the client will close when you finish/error
     // await client.close();
