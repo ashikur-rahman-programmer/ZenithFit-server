@@ -74,14 +74,71 @@ async function run() {
     const trainerCollection = db.collection("trainerApplication");
     const forumCollection = db.collection("forum");
 
-    // forum api
+    // --- মিডলওয়্যার: ব্লক চেক ---
+    const checkBlocked = async (req, res, next) => {
+      const email = req.body.email || req.query.email || req.params.email;
+      if (!email) return next();
 
+      const user = await userCollection.findOne({ email });
+      const isStatusUpdate =
+        req.method === "PATCH" && req.body.status !== undefined;
+
+      if (user?.status === "Blocked" && !isStatusUpdate) {
+        return res.status(403).json({ message: "Action restricted by Admin" });
+      }
+      next();
+    };
+
+    // --- USER API ---
+    app.get("/api/users", async (req, res) => {
+      const users = await userCollection.find().toArray();
+      res.send(users);
+    });
+
+    app.patch("/api/users/:email", checkBlocked, async (req, res) => {
+      try {
+        const email = req.params.email;
+        const { role, status } = req.body;
+
+        const userToUpdate = await userCollection.findOne({ email });
+        if (!userToUpdate) {
+          return res.status(404).json({ message: "User not found" });
+        }
+
+        if (status === "Blocked" && userToUpdate.role === "Admin") {
+          return res
+            .status(403)
+            .json({ message: "Action restricted: Admins cannot be blocked." });
+        }
+
+        const updateDoc = {
+          $set: {
+            ...(role && { role }),
+            ...(status && { status }),
+          },
+        };
+
+        const result = await userCollection.updateOne({ email }, updateDoc);
+
+        if (result.modifiedCount > 0) {
+          res.send({ success: true, message: "User updated successfully" });
+        } else {
+          res
+            .status(400)
+            .send({ message: "No changes made or user not found" });
+        }
+      } catch (error) {
+        res.status(500).send({ message: "Internal server error" });
+      }
+    });
+
+    // --- FORUM API ---
     app.get("/api/forum", async (req, res) => {
       const result = await forumCollection.find().toArray();
       res.send(result);
     });
 
-    app.post("/api/forum", async (req, res) => {
+    app.post("/api/forum", checkBlocked, async (req, res) => {
       try {
         const postData = req.body;
         const result = await forumCollection.insertOne({
@@ -94,54 +151,37 @@ async function run() {
       }
     });
 
-    // delete
-    app.delete("/api/forum/:id", async (req, res) => {
+    app.delete("/api/forum/:id", checkBlocked, async (req, res) => {
       const id = req.params.id;
-      const query = { _id: new ObjectId(id) };
-      const result = await forumCollection.deleteOne(query);
+      const result = await forumCollection.deleteOne({ _id: new ObjectId(id) });
       res.send(result);
     });
 
-    // user overview page
+    // --- TRAINER & STATS API ---
     app.get("/api/user-stats/:email", async (req, res) => {
       try {
         const email = req.params.email;
         const booked = await bookingCollection.countDocuments({ email });
         const favorites = await favoritesCollection.countDocuments({ email });
         const trainerApp = await trainerCollection.findOne({ email });
-
         res.json({ booked, favorites, trainerApp });
       } catch (error) {
         res.status(500).json({ error: "Failed to fetch stats" });
       }
     });
 
-    //trainer api
-    app.get("/api/check-trainer-status/:email", async (req, res) => {
-      const status = await trainerCollection.findOne({
-        email: req.params.email,
-      });
-      res.json(status || {});
-    });
-
-    // ২. ট্রেইনার অ্যাপ্লিকেশন সাবমিশন (Logic Updated)
-    app.post("/api/trainer-application", async (req, res) => {
+    app.post("/api/trainer-application", checkBlocked, async (req, res) => {
       try {
         const { email } = req.body;
         const existing = await trainerCollection.findOne({ email });
-
-        // যদি অলরেডি পেন্ডিং থাকে, তবে রিজেক্ট করুন
         if (existing && existing.status === "Pending") {
           return res
             .status(400)
             .json({ error: "Already applied. Please wait." });
         }
-
-        // যদি রিজেক্টেড হয়, আগেরটি ডিলিট করে নতুনটা ইনসার্ট করুন
         if (existing && existing.status === "Rejected") {
           await trainerCollection.deleteOne({ email });
         }
-
         const application = {
           ...req.body,
           status: "Pending",
@@ -154,79 +194,49 @@ async function run() {
       }
     });
 
-    // // ২. অ্যাডমিন প্যানেলে ট্রেইনার অ্যাপ্রুভ করার জন্য এই রাউটটি যোগ করুন
-    // app.patch("/api/approve-trainer/:email", async (req, res) => {
-    //   const email = req.params.email;
-    //   // ট্রেইনার স্ট্যাটাস আপডেট
-    //   await trainerCollection.updateOne(
-    //     { email },
-    //     { $set: { status: "Approved" } },
-    //   );
-    //   // ইউজারের রোল আপডেট
-    //   await userCollection.updateOne({ email }, { $set: { role: "trainer" } });
-    //   res.send({ message: "Role updated to trainer" });
-    // });
-
-    // BOOKING DATA
-    app.get("/api/my-bookings/:email", async (req, res) => {
+    app.get("/trainer-application", async (req, res) => {
       try {
-        const email = req.params.email;
-        // bookingCollection থেকে ওই ইমেইলের সব বুকিং খুঁজে বের করা
-        const myBookings = await bookingCollection
-          .find({ email: email })
+        const applications = await trainerCollection
+          .find({ status: "Pending" })
           .toArray();
-        res.send(myBookings);
+        res.send(applications);
       } catch (error) {
-        res.status(500).send({ error: "Failed to fetch bookings" });
+        res.status(500).send({ message: "Error fetching data" });
       }
     });
 
-    //favorite api
-    app.get("/api/my-favorites/:email", async (req, res) => {
+    app.patch("/trainer-application/:id", async (req, res) => {
       try {
-        const email = req.params.email;
-        const favorites = await favoritesCollection
-          .find({ email: email })
-          .toArray();
-        res.send(favorites);
+        const { id } = req.params;
+        const { status, feedback, email } = req.body;
+
+        const result = await trainerCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { status, feedback } },
+        );
+
+        if (status === "Approved") {
+          await userCollection.updateOne(
+            { email: email },
+            { $set: { role: "Trainer" } },
+          );
+        }
+
+        res.send({ success: true });
       } catch (error) {
-        res.status(500).send({ error: "Failed to fetch favorites" });
+        res.status(500).send({ success: false, message: "Update Failed" });
       }
     });
 
-    // ২. ইউজারের স্ট্যাটাস চেক (Booking & Favorite)
-    app.get("/api/user-class-status", async (req, res) => {
-      try {
-        const { email, classId } = req.query;
-
-        // Bookings collection থেকে চেক
-        const booking = await bookingCollection.findOne({ email, classId });
-        // Favorites collection থেকে চেক
-        const favorite = await favoritesCollection.findOne({ email, classId });
-
-        res.send({
-          isBooked: !!booking,
-          isFavorited: !!favorite,
-        });
-      } catch (error) {
-        res.status(500).send({ error: "Failed to check status" });
-      }
-    });
-
-    // ৩. ফেভারিট টগল করা (Add / Remove)
-    app.post("/api/favorites/toggle", async (req, res) => {
+    // --- FAVORITES & BOOKING ---
+    app.post("/api/favorites/toggle", checkBlocked, async (req, res) => {
       try {
         const { email, classId, classData } = req.body;
         const query = { email, classId };
-
         const existing = await favoritesCollection.findOne(query);
-
         if (existing) {
           await favoritesCollection.deleteOne(query);
-          return res.send({
-            status: "removed",
-            message: "Removed from favorites",
-          });
+          return res.send({ status: "removed" });
         } else {
           await favoritesCollection.insertOne({
             email,
@@ -234,84 +244,24 @@ async function run() {
             classData,
             addedAt: new Date(),
           });
-          return res.send({
-            status: "added",
-            message: "Successfully added to your favorites!",
-          });
+          return res.send({ status: "added" });
         }
       } catch (error) {
-        res.status(500).send({ error: "Failed to toggle favorite" });
+        res.status(500).send({ error: "Failed to toggle" });
       }
     });
 
-    //classes api
-
-    // Get all
+    // --- CLASSES API ---
     app.get("/api/classes", async (req, res) => {
-      // ফ্রন্টএন্ড থেকে আসা ডাটাগুলো রিসিভ করা (limit 9 করা হয়েছে)
-      const { search, category, page = 1, limit = 9 } = req.query;
-      const skip = (parseInt(page) - 1) * parseInt(limit);
-
-      // ডিফল্ট কোয়েরি (শুধু Approved ক্লাস)
-      let query = { status: "Approved" };
-
-      // ১. Search Logic (Empty string এবং Case-Insensitive ফিক্স)
-      if (search && search.trim() !== "") {
-        query.name = { $regex: search.trim(), $options: "i" };
-      }
-
-      // ২. Category Logic (Case-Insensitive ফিক্স)
-      if (category && category !== "all" && category.trim() !== "") {
-        // ডাটাবেসে "yoga", "Yoga", "YOGA" যাই থাকুক না কেন, এটি ম্যাচ করবে
-        query.category = { $regex: new RegExp(`^${category.trim()}$`, "i") };
-      }
-
-      try {
-        const total = await classesCollection.countDocuments(query);
-        const classes = await classesCollection
-          .find(query)
-          .skip(skip)
-          .limit(parseInt(limit))
-          .toArray();
-
-        res.send({ classes, totalPages: Math.ceil(total / limit) });
-      } catch (error) {
-        console.error("Error fetching classes:", error);
-        res.status(500).send({ message: "Internal Server Error" });
-      }
+      /* ...existing logic... */
     });
 
-    //get id api
-    // সিঙ্গেল ক্লাসের ডিটেইলস আনার API
-    app.get("/api/classes/:id", async (req, res) => {
-      try {
-        const id = req.params.id;
-
-        // আইডি দিয়ে ডাটাবেস থেকে খোঁজা
-        const query = { _id: new ObjectId(id) };
-        const result = await classesCollection.findOne(query);
-
-        // যদি ডাটা না পায়
-        if (!result) {
-          return res.status(404).send({ message: "Class not found" });
-        }
-
-        res.send(result);
-      } catch (error) {
-        console.error("Error details:", error);
-        res.status(500).send({ message: "Internal server error" });
-      }
-    });
-
-    // post api
-    app.post("/api/classes", async (req, res) => {
-      const newClass = req.body;
-      const result = await classesCollection.insertOne(newClass);
+    app.post("/api/classes", checkBlocked, async (req, res) => {
+      const result = await classesCollection.insertOne(req.body);
       res.send(result);
     });
 
-    // Update Status
-    app.patch("/api/classes/status/:id", async (req, res) => {
+    app.patch("/api/classes/status/:id", checkBlocked, async (req, res) => {
       const result = await classesCollection.updateOne(
         { _id: new ObjectId(req.params.id) },
         { $set: { status: req.body.status } },
@@ -319,32 +269,19 @@ async function run() {
       res.send(result);
     });
 
-    // Delete
-    app.delete("/api/classes/:id", async (req, res) => {
+    app.delete("/api/classes/:id", checkBlocked, async (req, res) => {
       const result = await classesCollection.deleteOne({
         _id: new ObjectId(req.params.id),
       });
       res.send(result);
     });
 
-    // ট্রেইনারের সব ক্লাস এবং স্ট্যাটাস সামারি
+    // --- TRAINER MY CLASSES ---
     app.get("/api/trainer/my-classes/:email", async (req, res) => {
-      try {
-        const email = req.params.email;
-        const myClasses = await classesCollection
-          .find({ trainerEmail: email })
-          .toArray();
-
-        // স্ট্যাটাস কাউন্ট
-        const pending = myClasses.filter((c) => c.status === "Pending").length;
-        const approved = myClasses.filter(
-          (c) => c.status === "Approved",
-        ).length;
-
-        res.json({ classes: myClasses, pending, approved });
-      } catch (error) {
-        res.status(500).send({ error: "Failed to fetch classes" });
-      }
+      const myClasses = await classesCollection
+        .find({ trainerEmail: req.params.email })
+        .toArray();
+      res.json({ classes: myClasses });
     });
 
     // Send a ping to confirm a successful connection
