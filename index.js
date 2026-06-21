@@ -75,6 +75,12 @@ async function run() {
     const forumCollection = db.collection("forum");
 
     // forum api
+
+    app.get("/api/forum", async (req, res) => {
+      const result = await forumCollection.find().toArray();
+      res.send(result);
+    });
+
     app.post("/api/forum", async (req, res) => {
       try {
         const postData = req.body;
@@ -86,6 +92,14 @@ async function run() {
       } catch (error) {
         res.status(500).send({ error: "Failed to publish post" });
       }
+    });
+
+    // delete
+    app.delete("/api/forum/:id", async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const result = await forumCollection.deleteOne(query);
+      res.send(result);
     });
 
     // user overview page
