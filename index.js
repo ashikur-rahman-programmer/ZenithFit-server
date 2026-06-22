@@ -284,6 +284,34 @@ async function run() {
       res.json({ classes: myClasses });
     });
 
+    // admin trainer manage
+    // ট্রেইনারদের লিস্ট পাওয়ার জন্য
+    app.get("/api/trainers", async (req, res) => {
+      try {
+        const trainers = await userCollection
+          .find({ role: "Trainer" })
+          .toArray();
+        res.send(trainers);
+      } catch (error) {
+        res.status(500).send({ message: "Error fetching trainers" });
+      }
+    });
+
+    // ট্রেইনার থেকে ইউজার করার জন্য (Demote)
+    app.patch("/api/users/role/:email", async (req, res) => {
+      try {
+        const { email } = req.params;
+        const { role } = req.body;
+        const result = await userCollection.updateOne(
+          { email: email },
+          { $set: { role: role } },
+        );
+        res.send({ success: result.modifiedCount > 0 });
+      } catch (error) {
+        res.status(500).send({ success: false });
+      }
+    });
+
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
     console.log(
