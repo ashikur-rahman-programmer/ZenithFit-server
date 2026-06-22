@@ -74,20 +74,36 @@ async function run() {
     const trainerCollection = db.collection("trainerApplication");
     const forumCollection = db.collection("forum");
 
-    // --- মিডলওয়্যার: ব্লক চেক ---
+    // --- মিডলওয়্যার: ব্লক চেক ---
     const checkBlocked = async (req, res, next) => {
-      const email = req.body.email || req.query.email || req.params.email;
+      const email = req.body?.email || req.query?.email || req.params?.email;
+
       if (!email) return next();
 
-      const user = await userCollection.findOne({ email });
-      const isStatusUpdate =
-        req.method === "PATCH" && req.body.status !== undefined;
+      try {
+        const user = await userCollection.findOne({ email });
 
-      if (user?.status === "Blocked" && !isStatusUpdate) {
-        return res.status(403).json({ message: "Action restricted by Admin" });
+        const isStatusUpdate =
+          req.method === "PATCH" && req.body?.status !== undefined;
+
+        if (user?.status === "Blocked" && !isStatusUpdate) {
+          return res
+            .status(403)
+            .json({ message: "Action restricted by Admin" });
+        }
+
+        next();
+      } catch (error) {
+        console.error("CheckBlocked Error:", error);
+        next();
       }
-      next();
     };
+
+    // admin transaction api
+    app.get("/api/transaction", async (req, res) => {
+      const query = await bookingCollection.find().toArray();
+      res.send(query);
+    });
 
     // --- USER API ---
     app.get("/api/users", async (req, res) => {
@@ -298,7 +314,6 @@ async function run() {
     });
 
     //get id api
-    // সিঙ্গেল ক্লাসের ডিটেইলস আনার API
     app.get("/api/classes/:id", async (req, res) => {
       try {
         const id = req.params.id;
