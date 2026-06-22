@@ -99,6 +99,15 @@ async function run() {
       }
     };
 
+    // admin overview
+    app.get("/api/admin-stats", async (req, res) => {
+      const usersCount = await userCollection.countDocuments();
+      const classesCount = await classesCollection.countDocuments();
+      const bookingsCount = await bookingCollection.countDocuments();
+
+      res.send({ usersCount, classesCount, bookingsCount });
+    });
+
     // admin transaction api
     app.get("/api/transaction", async (req, res) => {
       const query = await bookingCollection.find().toArray();
