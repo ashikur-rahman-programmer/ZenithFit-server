@@ -105,7 +105,7 @@ async function run() {
           return res.status(404).json({ message: "User not found" });
         }
 
-        if (status === "Blocked" && userToUpdate.role === "Admin") {
+        if (status === "Blocked" && userToUpdate.role === "admin") {
           return res
             .status(403)
             .json({ message: "Action restricted: Admins cannot be blocked." });
@@ -218,7 +218,7 @@ async function run() {
         if (status === "Approved") {
           await userCollection.updateOne(
             { email: email },
-            { $set: { role: "Trainer" } },
+            { $set: { role: "trainer" } },
           );
         }
 
@@ -252,8 +252,71 @@ async function run() {
     });
 
     // --- CLASSES API ---
+    // Get all
     app.get("/api/classes", async (req, res) => {
-      /* ...existing logic... */
+      // ফ্রন্টএন্ড থেকে আসা ডাটাগুলো রিসিভ করা (limit 9 করা হয়েছে)
+      const { search, category, page = 1, limit = 9 } = req.query;
+      const skip = (parseInt(page) - 1) * parseInt(limit);
+
+      // ডিফল্ট কোয়েরি (শুধু Approved ক্লাস)
+      let query = { status: "Approved" };
+
+      // ১. Search Logic (Empty string এবং Case-Insensitive ফিক্স)
+      if (search && search.trim() !== "") {
+        query.name = { $regex: search.trim(), $options: "i" };
+      }
+
+      // ২. Category Logic (Case-Insensitive ফিক্স)
+      if (category && category !== "all" && category.trim() !== "") {
+        // ডাটাবেসে "yoga", "Yoga", "YOGA" যাই থাকুক না কেন, এটি ম্যাচ করবে
+        query.category = { $regex: new RegExp(`^${category.trim()}$`, "i") };
+      }
+
+      try {
+        const total = await classesCollection.countDocuments(query);
+        const classes = await classesCollection
+          .find(query)
+          .skip(skip)
+          .limit(parseInt(limit))
+          .toArray();
+
+        res.send({ classes, totalPages: Math.ceil(total / limit) });
+      } catch (error) {
+        console.error("Error fetching classes:", error);
+        res.status(500).send({ message: "Internal Server Error" });
+      }
+    });
+
+    // সব ক্লাসের জন্য (Admin Only)
+    app.get("/api/admin/classes", async (req, res) => {
+      try {
+        const classes = await classesCollection.find().toArray();
+        res.send(classes);
+      } catch (error) {
+        res.status(500).send({ message: "Error fetching classes" });
+      }
+    });
+
+    //get id api
+    // সিঙ্গেল ক্লাসের ডিটেইলস আনার API
+    app.get("/api/classes/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+
+        // আইডি দিয়ে ডাটাবেস থেকে খোঁজা
+        const query = { _id: new ObjectId(id) };
+        const result = await classesCollection.findOne(query);
+
+        // যদি ডাটা না পায়
+        if (!result) {
+          return res.status(404).send({ message: "Class not found" });
+        }
+
+        res.send(result);
+      } catch (error) {
+        console.error("Error details:", error);
+        res.status(500).send({ message: "Internal server error" });
+      }
     });
 
     app.post("/api/classes", checkBlocked, async (req, res) => {
@@ -285,15 +348,22 @@ async function run() {
     });
 
     // admin trainer manage
-    // ট্রেইনারদের লিস্ট পাওয়ার জন্য
+
     app.get("/api/trainers", async (req, res) => {
       try {
-        const trainers = await userCollection
-          .find({ role: "Trainer" })
-          .toArray();
+        // ফিল্টার ছাড়া সব ইউজার নিয়ে আসুন
+        const allUsers = await userCollection.find().toArray();
+
+        // ম্যানুয়ালি ফিল্টার করুন এবং লগ করুন
+        const trainers = allUsers.filter((user) => {
+          console.log(`Checking user: ${user.email}, Role: ${user.role}`);
+          return user.role === "trainer";
+        });
+
+        console.log("Trainers filtered:", trainers);
         res.send(trainers);
       } catch (error) {
-        res.status(500).send({ message: "Error fetching trainers" });
+        res.status(500).send({ message: "Error" });
       }
     });
 
