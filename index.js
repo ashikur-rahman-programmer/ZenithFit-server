@@ -13,6 +13,7 @@ app.use(
   cors({
     credentials: true,
     origin: [process.env.CLIENT_URL],
+    methods: ["GET", "POST", "PUT", "DELETE"],
   }),
 );
 app.use(express.json());
@@ -78,13 +79,11 @@ async function run() {
     const checkBlocked = async (req, res, next) => {
       const email = req.body?.email || req.query?.email || req.params?.email;
 
-      // ইমেইল না থাকলে মিডেলওয়্যার থেকে বের হয়ে যান
       if (!email) return next();
 
       try {
         const user = await userCollection.findOne({ email: email });
 
-        // ইউজার যদি ডাটাবেসে না থাকে, তবে ব্লকড কি না তা চেক করার দরকার নেই
         if (!user) return next();
 
         const isStatusUpdate =
@@ -101,6 +100,22 @@ async function run() {
         next();
       }
     };
+
+    // featured section
+    app.get("/api/classes/featured", async (req, res) => {
+      try {
+        const featuredClasses = await classesCollection
+          .find({ status: "Approved" })
+          .sort({ bookingCount: -1 })
+          .limit(3)
+          .toArray();
+
+        res.status(200).json(featuredClasses);
+      } catch (error) {
+        console.error("Error fetching featured classes:", error);
+        res.status(500).json({ message: "Internal Server Error" });
+      }
+    });
 
     // admin overview
     app.get("/api/admin-stats", async (req, res) => {
@@ -162,7 +177,10 @@ async function run() {
 
     // --- FORUM API ---
     app.get("/api/forum", async (req, res) => {
-      const result = await forumCollection.find().toArray();
+      const result = await forumCollection
+        .find()
+        .sort({ createdAt: -1 })
+        .toArray();
       res.send(result);
     });
 
@@ -238,13 +256,11 @@ async function run() {
         const { id } = req.params;
         const { status, feedback, email } = req.body;
 
-        // ১. স্ট্যাটাস আপডেট করুন
         const result = await trainerCollection.updateOne(
           { _id: new ObjectId(id) },
-          { $set: { status: status, feedback: feedback } }, // status এখানে আপডেট হবে
+          { $set: { status: status, feedback: feedback } },
         );
 
-        // ২. যদি এপ্রুভ হয়, তবেই রোল আপডেট করুন
         if (status === "Approved") {
           await userCollection.updateOne(
             { email: email },
@@ -262,13 +278,80 @@ async function run() {
     app.get("/api/my-bookings/:email", async (req, res) => {
       try {
         const email = req.params.email;
-        // bookingCollection থেকে ওই ইমেইলের সব বুকিং খুঁজে বের করা
+
         const myBookings = await bookingCollection
           .find({ email: email })
           .toArray();
         res.send(myBookings);
       } catch (error) {
         res.status(500).send({ error: "Failed to fetch bookings" });
+      }
+    });
+
+    // index.js এ এই অংশটুকু যোগ করুন
+    app.get("/api/user-class-status", async (req, res) => {
+      try {
+        const { email, classId } = req.query;
+        if (!email || !classId)
+          return res.status(400).send({ message: "Missing params" });
+
+        const isBooked = await bookingCollection.findOne({
+          email,
+          classId: new ObjectId(classId),
+        });
+
+        const isFavorited = await favoritesCollection.findOne({
+          email,
+          classId: classId,
+        });
+
+        res.send({
+          isBooked: !!isBooked,
+          isFavorited: !!isFavorited,
+        });
+      } catch (error) {
+        res.status(500).send({ error: "Failed to fetch status" });
+      }
+    });
+
+    // --- নতুন বুকিং API (পেমেন্ট কনফার্ম হওয়ার পর এটি কল হবে) ---
+    app.post("/api/bookings", checkBlocked, async (req, res) => {
+      try {
+        const { userId, classId, email, className, paymentIntent, amount } =
+          req.body;
+
+        // ১. একই ইউজার যেন একই ক্লাস ডুপ্লিকেট বুক না করে
+        const existing = await bookingCollection.findOne({
+          email,
+          classId: new ObjectId(classId),
+        });
+        if (existing) {
+          return res
+            .status(400)
+            .send({ message: "Already booked this class!" });
+        }
+
+        // ২. বুকিং ইনসার্ট করা
+        await bookingCollection.insertOne({
+          userId,
+          classId: new ObjectId(classId),
+          email,
+          className,
+          paymentIntent,
+          amount,
+          status: "confirmed",
+          createdAt: new Date(),
+        });
+
+        // ৩. ক্লাস কালেকশনে বুকিং কাউন্ট ১ বাড়ানো
+        await classesCollection.updateOne(
+          { _id: new ObjectId(classId) },
+          { $inc: { bookingCount: 1 } },
+        );
+
+        res.status(201).send({ success: true, message: "Booking confirmed!" });
+      } catch (error) {
+        res.status(500).send({ error: "Booking failed!" });
       }
     });
 
