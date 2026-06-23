@@ -78,20 +78,23 @@ async function run() {
     const checkBlocked = async (req, res, next) => {
       const email = req.body?.email || req.query?.email || req.params?.email;
 
+      // ইমেইল না থাকলে মিডেলওয়্যার থেকে বের হয়ে যান
       if (!email) return next();
 
       try {
-        const user = await userCollection.findOne({ email });
+        const user = await userCollection.findOne({ email: email });
+
+        // ইউজার যদি ডাটাবেসে না থাকে, তবে ব্লকড কি না তা চেক করার দরকার নেই
+        if (!user) return next();
 
         const isStatusUpdate =
           req.method === "PATCH" && req.body?.status !== undefined;
 
-        if (user?.status === "Blocked" && !isStatusUpdate) {
+        if (user.status === "Blocked" && !isStatusUpdate) {
           return res
             .status(403)
             .json({ message: "Action restricted by Admin" });
         }
-
         next();
       } catch (error) {
         console.error("CheckBlocked Error:", error);
@@ -235,11 +238,13 @@ async function run() {
         const { id } = req.params;
         const { status, feedback, email } = req.body;
 
+        // ১. স্ট্যাটাস আপডেট করুন
         const result = await trainerCollection.updateOne(
           { _id: new ObjectId(id) },
-          { $set: { status, feedback } },
+          { $set: { status: status, feedback: feedback } }, // status এখানে আপডেট হবে
         );
 
+        // ২. যদি এপ্রুভ হয়, তবেই রোল আপডেট করুন
         if (status === "Approved") {
           await userCollection.updateOne(
             { email: email },
@@ -247,9 +252,36 @@ async function run() {
           );
         }
 
-        res.send({ success: true });
+        res.send({ success: true, modifiedCount: result.modifiedCount });
       } catch (error) {
         res.status(500).send({ success: false, message: "Update Failed" });
+      }
+    });
+
+    // BOOKING DATA
+    app.get("/api/my-bookings/:email", async (req, res) => {
+      try {
+        const email = req.params.email;
+        // bookingCollection থেকে ওই ইমেইলের সব বুকিং খুঁজে বের করা
+        const myBookings = await bookingCollection
+          .find({ email: email })
+          .toArray();
+        res.send(myBookings);
+      } catch (error) {
+        res.status(500).send({ error: "Failed to fetch bookings" });
+      }
+    });
+
+    //favorite api
+    app.get("/api/my-favorites/:email", async (req, res) => {
+      try {
+        const email = req.params.email;
+        const favorites = await favoritesCollection
+          .find({ email: email })
+          .toArray();
+        res.send(favorites);
+      } catch (error) {
+        res.status(500).send({ error: "Failed to fetch favorites" });
       }
     });
 
@@ -403,6 +435,44 @@ async function run() {
         res.send({ success: result.modifiedCount > 0 });
       } catch (error) {
         res.status(500).send({ success: false });
+      }
+    });
+
+    //trainer api
+    app.get("/api/check-trainer-status/:email", async (req, res) => {
+      const status = await trainerCollection.findOne({
+        email: req.params.email,
+      });
+      res.json(status || {});
+    });
+
+    // ২. ট্রেইনার অ্যাপ্লিকেশন সাবমিশন (Logic Updated)
+    app.post("/api/trainer-application", async (req, res) => {
+      try {
+        const { email } = req.body;
+        const existing = await trainerCollection.findOne({ email });
+
+        // যদি অলরেডি পেন্ডিং থাকে, তবে রিজেক্ট করুন
+        if (existing && existing.status === "Pending") {
+          return res
+            .status(400)
+            .json({ error: "Already applied. Please wait." });
+        }
+
+        // যদি রিজেক্টেড হয়, আগেরটি ডিলিট করে নতুনটা ইনসার্ট করুন
+        if (existing && existing.status === "Rejected") {
+          await trainerCollection.deleteOne({ email });
+        }
+
+        const application = {
+          ...req.body,
+          status: "Pending",
+          appliedAt: new Date(),
+        };
+        const result = await trainerCollection.insertOne(application);
+        res.status(201).send(result);
+      } catch (error) {
+        res.status(500).send({ error: "Server error" });
       }
     });
 
