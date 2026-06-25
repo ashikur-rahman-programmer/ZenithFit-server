@@ -13,10 +13,11 @@ app.use(
   cors({
     credentials: true,
     origin: [process.env.CLIENT_URL],
-    methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   }),
 );
 app.use(express.json());
+// app.use(cors());
 
 // verify token
 const JWKS = createRemoteJWKSet(
@@ -119,29 +120,57 @@ async function run() {
 
     // --- checkBlocked middleware  ---
     const checkBlocked = async (req, res, next) => {
-      const email = req.body?.email || req.query?.email || req.params?.email;
-
-      if (!email) return next();
-
       try {
+        const email = req.user?.email;
+
+        if (!email) {
+          return res
+            .status(401)
+            .json({ message: "Unauthorized: No user email found" });
+        }
         const user = await userCollection.findOne({ email: email });
 
-        if (!user) return next();
+        if (user?.status === "Blocked") {
+          const isStatusUpdate =
+            req.method === "PATCH" && req.body?.status !== undefined;
 
-        const isStatusUpdate =
-          req.method === "PATCH" && req.body?.status !== undefined;
-
-        if (user.status === "Blocked" && !isStatusUpdate) {
-          return res
-            .status(403)
-            .json({ message: "Action restricted by Admin" });
+          if (!isStatusUpdate) {
+            return res
+              .status(403)
+              .json({ message: "Action restricted by Admin" });
+          }
         }
+
         next();
       } catch (error) {
         console.error("CheckBlocked Error:", error);
-        next();
+        res.status(500).json({ message: "Internal Server Error" });
       }
     };
+    // const checkBlocked = async (req, res, next) => {
+    //   const email = req.body?.email || req.query?.email || req.params?.email;
+
+    //   if (!email) return next();
+
+    //   try {
+    //     const user = await userCollection.findOne({ email: email });
+
+    //     if (!user) return next();
+
+    //     const isStatusUpdate =
+    //       req.method === "PATCH" && req.body?.status !== undefined;
+
+    //     if (user.status === "Blocked" && !isStatusUpdate) {
+    //       return res
+    //         .status(403)
+    //         .json({ message: "Action restricted by Admin" });
+    //     }
+    //     next();
+    //   } catch (error) {
+    //     console.error("CheckBlocked Error:", error);
+    //     next();
+    //   }
+    // };
 
     // featured section
     app.get("/api/classes/featured", async (req, res) => {
@@ -302,43 +331,38 @@ async function run() {
     });
 
     // like and dislikes
-    app.post(
-      "/api/posts/:id/react",
-      verifyToken,
-      checkBlocked,
-      async (req, res) => {
-        const { id } = req.params;
-        const { type, userEmail } = req.body;
-        const post = await forumCollection.findOne({ _id: new ObjectId(id) });
+    app.post("/api/posts/:id/react", verifyToken, async (req, res) => {
+      const { id } = req.params;
+      const { type, userEmail } = req.body;
+      const post = await forumCollection.findOne({ _id: new ObjectId(id) });
 
-        let update;
-        if (type === "like") {
-          // যদি অলরেডি লাইক থাকে, তবে রিমুভ (Toggle), নাহলে এড
-          update = post.likes?.includes(userEmail)
-            ? { $pull: { likes: userEmail } }
-            : {
-                $addToSet: { likes: userEmail },
-                $pull: { dislikes: userEmail },
-              };
-        } else {
-          update = post.dislikes?.includes(userEmail)
-            ? { $pull: { dislikes: userEmail } }
-            : {
-                $addToSet: { dislikes: userEmail },
-                $pull: { likes: userEmail },
-              };
-        }
+      let update;
+      if (type === "like") {
+        // যদি অলরেডি লাইক থাকে, তবে রিমুভ (Toggle), নাহলে এড
+        update = post.likes?.includes(userEmail)
+          ? { $pull: { likes: userEmail } }
+          : {
+              $addToSet: { likes: userEmail },
+              $pull: { dislikes: userEmail },
+            };
+      } else {
+        update = post.dislikes?.includes(userEmail)
+          ? { $pull: { dislikes: userEmail } }
+          : {
+              $addToSet: { dislikes: userEmail },
+              $pull: { likes: userEmail },
+            };
+      }
 
-        await forumCollection.updateOne({ _id: new ObjectId(id) }, update);
-        const updatedPost = await forumCollection.findOne({
-          _id: new ObjectId(id),
-        });
-        res.send({
-          likes: updatedPost.likes || [],
-          dislikes: updatedPost.dislikes || [],
-        });
-      },
-    );
+      await forumCollection.updateOne({ _id: new ObjectId(id) }, update);
+      const updatedPost = await forumCollection.findOne({
+        _id: new ObjectId(id),
+      });
+      res.send({
+        likes: updatedPost.likes || [],
+        dislikes: updatedPost.dislikes || [],
+      });
+    });
 
     // comment
     app.post(
@@ -621,32 +645,37 @@ async function run() {
     });
 
     // --- FAVORITES & BOOKING ---
-    app.post(
-      "/api/favorites/toggle",
-      verifyToken,
-      checkBlocked,
-      async (req, res) => {
-        try {
-          const { email, classId, classData } = req.body;
-          const query = { email, classId };
-          const existing = await favoritesCollection.findOne(query);
-          if (existing) {
-            await favoritesCollection.deleteOne(query);
-            return res.send({ status: "removed" });
-          } else {
-            await favoritesCollection.insertOne({
-              email,
-              classId,
-              classData,
-              addedAt: new Date(),
-            });
-            return res.send({ status: "added" });
-          }
-        } catch (error) {
-          res.status(500).send({ error: "Failed to toggle" });
+
+    // delete
+    app.delete("/api/favorites/:id", checkBlocked, async (req, res) => {
+      const id = req.params.id;
+      const result = await favoritesCollection.deleteOne({
+        _id: new ObjectId(id),
+      });
+      res.send(result);
+    });
+
+    app.post("/api/favorites/toggle", verifyToken, async (req, res) => {
+      try {
+        const { email, classId, classData } = req.body;
+        const query = { email, classId };
+        const existing = await favoritesCollection.findOne(query);
+        if (existing) {
+          await favoritesCollection.deleteOne(query);
+          return res.send({ status: "removed" });
+        } else {
+          await favoritesCollection.insertOne({
+            email,
+            classId,
+            classData,
+            addedAt: new Date(),
+          });
+          return res.send({ status: "added" });
         }
-      },
-    );
+      } catch (error) {
+        res.status(500).send({ error: "Failed to toggle" });
+      }
+    });
 
     // Get all
     app.get("/api/classes", async (req, res) => {
@@ -806,12 +835,16 @@ async function run() {
     );
 
     //trainer api
-    app.get("/api/check-trainer-status/:email", async (req, res) => {
-      const status = await trainerCollection.findOne({
-        email: req.params.email,
-      });
-      res.json(status || {});
-    });
+    app.get(
+      "/api/check-trainer-status/:email",
+      checkBlocked,
+      async (req, res) => {
+        const status = await trainerCollection.findOne({
+          email: req.params.email,
+        });
+        res.json(status || {});
+      },
+    );
 
     // submit application trainer
     app.post(
