@@ -106,7 +106,7 @@ const client = new MongoClient(uri, {
 async function run() {
   try {
     // Connect the client to the server	(optional starting in v4.7)
-    await client.connect();
+    // await client.connect();
 
     //database and collection
     const db = client.db("zenithFit");
@@ -452,29 +452,34 @@ async function run() {
     });
 
     // trainer apply
-    app.post("/api/trainer-application", checkBlocked, async (req, res) => {
-      try {
-        const { email } = req.body;
-        const existing = await trainerCollection.findOne({ email });
-        if (existing && existing.status === "Pending") {
-          return res
-            .status(400)
-            .json({ error: "Already applied. Please wait." });
+    app.post(
+      "/api/trainer-application",
+      trainerVerify,
+      checkBlocked,
+      async (req, res) => {
+        try {
+          const { email } = req.body;
+          const existing = await trainerCollection.findOne({ email });
+          if (existing && existing.status === "Pending") {
+            return res
+              .status(400)
+              .json({ error: "Already applied. Please wait." });
+          }
+          if (existing && existing.status === "Rejected") {
+            await trainerCollection.deleteOne({ email });
+          }
+          const application = {
+            ...req.body,
+            status: "Pending",
+            appliedAt: new Date(),
+          };
+          const result = await trainerCollection.insertOne(application);
+          res.status(201).send(result);
+        } catch (error) {
+          res.status(500).send({ error: "Server error" });
         }
-        if (existing && existing.status === "Rejected") {
-          await trainerCollection.deleteOne({ email });
-        }
-        const application = {
-          ...req.body,
-          status: "Pending",
-          appliedAt: new Date(),
-        };
-        const result = await trainerCollection.insertOne(application);
-        res.status(201).send(result);
-      } catch (error) {
-        res.status(500).send({ error: "Server error" });
-      }
-    });
+      },
+    );
 
     app.get(
       "/trainer-application",
@@ -844,10 +849,10 @@ async function run() {
     );
 
     // Send a ping to confirm a successful connection
-    await client.db("admin").command({ ping: 1 });
-    console.log(
-      "Pinged your deployment. You successfully connected to MongoDB!",
-    );
+    // await client.db("admin").command({ ping: 1 });
+    // console.log(
+    //   "Pinged your deployment. You successfully connected to MongoDB!",
+    // );
   } catch (err) {
     console.error(err);
   } finally {
@@ -858,7 +863,7 @@ async function run() {
 run().catch(console.dir);
 
 app.get("/", (req, res) => {
-  res.send("Server is running fine!");
+  res.send("ZenithFit website is running fine!");
 });
 
 app.listen(PORT, () => {
