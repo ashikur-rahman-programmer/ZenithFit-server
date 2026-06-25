@@ -13,39 +13,81 @@ app.use(
   cors({
     credentials: true,
     origin: [process.env.CLIENT_URL],
-    methods: ["GET", "POST", "PUT", "DELETE"],
+    methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
   }),
 );
 app.use(express.json());
 
 // verify token
-// const JWKS = createRemoteJWKSet(
-//   new URL(`${process.env.CLIENT_URL}/api/auth/jwks`),
-// );
+const JWKS = createRemoteJWKSet(
+  new URL(`${process.env.CLIENT_URL}/api/auth/jwks`),
+);
 
-// const verifyToken = async (req, res, next) => {
-//   const authHeader = req?.headers.authorization;
-//   // console.log(authHeader);
+const verifyToken = async (req, res, next) => {
+  const authHeader = req?.headers.authorization;
+  // console.log(authHeader);
 
-//   if (!authHeader) {
-//     return res.status(401).json({ message: "Unauthorized" });
+  if (!authHeader) {
+    return res.status(401).json({ message: "Unauthorized" });
+  }
+
+  const token = authHeader.split(" ")[1];
+
+  // console.log(token);
+
+  if (!token) {
+    return res.status(401).json({ message: "Unauthorized" });
+  }
+
+  try {
+    const { payload } = await jwtVerify(token, JWKS);
+    req.user = payload;
+    next();
+  } catch (error) {
+    return res.status(401).json({ message: "Unauthorized" });
+  }
+};
+
+//for admin
+const adminVerify = async (req, res, next) => {
+  //user check
+  if (!req.user) {
+    return res.status(401).json({ message: "Unauthorized: No user found" });
+  }
+
+  //role check
+  if (req.user?.role !== "admin") {
+    return res.status(403).json({ message: "Forbidden" });
+  }
+  next();
+};
+
+//for trainer
+const trainerVerify = async (req, res, next) => {
+  //user check
+  if (!req.user) {
+    return res.status(401).json({ message: "Unauthorized: No user found" });
+  }
+
+  //role check
+  if (req.user?.role !== "trainer") {
+    return res.status(403).json({ message: "Forbidden" });
+  }
+  next();
+};
+
+//for user
+// const userVerify = async (req, res, next) => {
+//   //user check
+//   if (!req.user) {
+//     return res.status(401).json({ message: "Unauthorized: No user found" });
 //   }
 
-//   const token = authHeader.split(" ")[1];
-
-//   // console.log(token);
-
-//   if (!token) {
-//     return res.status(401).json({ message: "Unauthorized" });
+//   //role check
+//   if (req.user?.role !== "user") {
+//     return res.status(403).json({ message: "Forbidden" });
 //   }
-
-//   try {
-//     const { payload } = await jwtVerify(token, JWKS);
-//     req.user = payload;
-//     next();
-//   } catch (error) {
-//     return res.status(401).json({ message: "Unauthorized" });
-//   }
+//   next();
 // };
 
 //mongodb connect
@@ -75,7 +117,7 @@ async function run() {
     const trainerCollection = db.collection("trainerApplication");
     const forumCollection = db.collection("forum");
 
-    // --- মিডলওয়্যার: ব্লক চেক ---
+    // --- checkBlocked middleware  ---
     const checkBlocked = async (req, res, next) => {
       const email = req.body?.email || req.query?.email || req.params?.email;
 
@@ -107,7 +149,7 @@ async function run() {
         const featuredClasses = await classesCollection
           .find({ status: "Approved" })
           .sort({ bookingCount: -1 })
-          .limit(3)
+          .limit(6)
           .toArray();
 
         res.status(200).json(featuredClasses);
@@ -118,7 +160,7 @@ async function run() {
     });
 
     // admin overview
-    app.get("/api/admin-stats", async (req, res) => {
+    app.get("/api/admin-stats", verifyToken, adminVerify, async (req, res) => {
       const usersCount = await userCollection.countDocuments();
       const classesCount = await classesCollection.countDocuments();
       const bookingsCount = await bookingCollection.countDocuments();
@@ -127,81 +169,274 @@ async function run() {
     });
 
     // admin transaction api
-    app.get("/api/transaction", async (req, res) => {
+    app.get("/api/transaction", verifyToken, adminVerify, async (req, res) => {
       const query = await bookingCollection.find().toArray();
       res.send(query);
     });
 
     // --- USER API ---
-    app.get("/api/users", async (req, res) => {
+    app.get("/api/users", verifyToken, adminVerify, async (req, res) => {
       const users = await userCollection.find().toArray();
       res.send(users);
     });
 
-    app.patch("/api/users/:email", checkBlocked, async (req, res) => {
-      try {
-        const email = req.params.email;
-        const { role, status } = req.body;
+    //update api admin
+    app.patch(
+      "/api/users/:email",
+      verifyToken,
+      adminVerify,
+      checkBlocked,
+      async (req, res) => {
+        try {
+          const email = req.params.email;
+          const { role, status } = req.body;
 
-        const userToUpdate = await userCollection.findOne({ email });
-        if (!userToUpdate) {
-          return res.status(404).json({ message: "User not found" });
+          const userToUpdate = await userCollection.findOne({ email });
+          if (!userToUpdate) {
+            return res.status(404).json({ message: "User not found" });
+          }
+
+          if (status === "Blocked" && userToUpdate.role === "admin") {
+            return res.status(403).json({
+              message: "Action restricted: Admins cannot be blocked.",
+            });
+          }
+
+          const updateDoc = {
+            $set: {
+              ...(role && { role }),
+              ...(status && { status }),
+            },
+          };
+
+          const result = await userCollection.updateOne({ email }, updateDoc);
+
+          if (result.modifiedCount > 0) {
+            res.send({ success: true, message: "User updated successfully" });
+          } else {
+            res
+              .status(400)
+              .send({ message: "No changes made or user not found" });
+          }
+        } catch (error) {
+          res.status(500).send({ message: "Internal server error" });
         }
-
-        if (status === "Blocked" && userToUpdate.role === "admin") {
-          return res
-            .status(403)
-            .json({ message: "Action restricted: Admins cannot be blocked." });
-        }
-
-        const updateDoc = {
-          $set: {
-            ...(role && { role }),
-            ...(status && { status }),
-          },
-        };
-
-        const result = await userCollection.updateOne({ email }, updateDoc);
-
-        if (result.modifiedCount > 0) {
-          res.send({ success: true, message: "User updated successfully" });
-        } else {
-          res
-            .status(400)
-            .send({ message: "No changes made or user not found" });
-        }
-      } catch (error) {
-        res.status(500).send({ message: "Internal server error" });
-      }
-    });
+      },
+    );
 
     // --- FORUM API ---
     app.get("/api/forum", async (req, res) => {
       const result = await forumCollection
         .find()
         .sort({ createdAt: -1 })
+        .limit(3)
         .toArray();
       res.send(result);
     });
 
-    app.post("/api/forum", checkBlocked, async (req, res) => {
+    // কমিউনিটি পেজের জন্য Pagination API
+    app.get("/api/all-forums", async (req, res) => {
+      const page = parseInt(req.query.page) || 1; // বর্তমান পেজ নম্বর
+      const limit = parseInt(req.query.limit) || 6; // প্রতি পেজে কয়টি পোস্ট থাকবে
+      const skip = (page - 1) * limit; // কতগুলো পোস্ট স্কিপ করবে
+
       try {
-        const postData = req.body;
-        const result = await forumCollection.insertOne({
-          ...postData,
-          createdAt: new Date(),
+        // মোট পোস্টের সংখ্যা বের করা
+        const totalPosts = await forumCollection.countDocuments();
+
+        // ডাটা ফেচ করা
+        const posts = await forumCollection
+          .find()
+          .skip(skip)
+          .limit(limit)
+          .toArray();
+
+        res.send({
+          posts,
+          totalPosts,
+          totalPages: Math.ceil(totalPosts / limit),
+          currentPage: page,
         });
-        res.status(201).send(result);
       } catch (error) {
-        res.status(500).send({ error: "Failed to publish post" });
+        res.status(500).send({ message: "Failed to fetch forums" });
       }
     });
 
+    app.get("/api/forum/:id", verifyToken, async (req, res) => {
+      const { id } = req.params;
+      try {
+        const query = { _id: new ObjectId(id) };
+        const result = await forumCollection.findOne(query);
+        if (!result) return res.status(404).send({ message: "Post not found" });
+        res.status(200).send(result);
+      } catch (error) {
+        res.status(500).send({ message: "Server error" });
+      }
+    });
+
+    //trainer forum create post
+    app.post(
+      "/api/forum",
+      verifyToken,
+      trainerVerify,
+      checkBlocked,
+      async (req, res) => {
+        try {
+          const postData = req.body;
+          const result = await forumCollection.insertOne({
+            ...postData,
+            createdAt: new Date(),
+          });
+          res.status(201).send(result);
+        } catch (error) {
+          res.status(500).send({ error: "Failed to publish post" });
+        }
+      },
+    );
+
+    // delete
     app.delete("/api/forum/:id", checkBlocked, async (req, res) => {
       const id = req.params.id;
       const result = await forumCollection.deleteOne({ _id: new ObjectId(id) });
       res.send(result);
     });
+
+    // like and dislikes
+    app.post(
+      "/api/posts/:id/react",
+      verifyToken,
+      checkBlocked,
+      async (req, res) => {
+        const { id } = req.params;
+        const { type, userEmail } = req.body;
+        const post = await forumCollection.findOne({ _id: new ObjectId(id) });
+
+        let update;
+        if (type === "like") {
+          // যদি অলরেডি লাইক থাকে, তবে রিমুভ (Toggle), নাহলে এড
+          update = post.likes?.includes(userEmail)
+            ? { $pull: { likes: userEmail } }
+            : {
+                $addToSet: { likes: userEmail },
+                $pull: { dislikes: userEmail },
+              };
+        } else {
+          update = post.dislikes?.includes(userEmail)
+            ? { $pull: { dislikes: userEmail } }
+            : {
+                $addToSet: { dislikes: userEmail },
+                $pull: { likes: userEmail },
+              };
+        }
+
+        await forumCollection.updateOne({ _id: new ObjectId(id) }, update);
+        const updatedPost = await forumCollection.findOne({
+          _id: new ObjectId(id),
+        });
+        res.send({
+          likes: updatedPost.likes || [],
+          dislikes: updatedPost.dislikes || [],
+        });
+      },
+    );
+
+    // comment
+    app.post(
+      "/api/posts/:id/comments",
+      verifyToken,
+      checkBlocked,
+      async (req, res) => {
+        const newComment = {
+          _id: new ObjectId(),
+          ...req.body,
+          createdAt: new Date(),
+        };
+        await forumCollection.updateOne(
+          { _id: new ObjectId(req.params.id) },
+          { $push: { comments: newComment } },
+        );
+        res.send(newComment);
+      },
+    );
+
+    //edit comment
+    app.patch(
+      "/api/comments/:commentId",
+      verifyToken,
+      checkBlocked,
+      async (req, res) => {
+        const { commentId } = req.params;
+        const { newText } = req.body;
+
+        const result = await forumCollection.updateOne(
+          { "comments._id": new ObjectId(commentId) },
+          { $set: { "comments.$.text": newText } },
+        );
+
+        if (result.matchedCount > 0) {
+          res.send({ success: true });
+        } else {
+          res
+            .status(404)
+            .send({ success: false, message: "Comment not found" });
+        }
+      },
+    );
+
+    // app.patch("/api/comments/:commentId", async (req, res) => {
+    //   try {
+    //     const { commentId } = req.params;
+    //     const { newText } = req.body;
+
+    //     console.log("Comment ID:", commentId);
+    //     console.log("New Text:", newText);
+
+    //     const result = await forumCollection.updateOne(
+    //       {
+    //         "comments._id": new ObjectId(commentId),
+    //       },
+    //       {
+    //         $set: {
+    //           "comments.$.text": newText,
+    //         },
+    //       },
+    //     );
+
+    //     console.log(result);
+
+    //     if (result.matchedCount > 0) {
+    //       res.send({ success: true });
+    //     } else {
+    //       res.status(404).send({
+    //         success: false,
+    //         message: "Comment not found",
+    //       });
+    //     }
+    //   } catch (error) {
+    //     console.error("PATCH ERROR:", error);
+
+    //     res.status(500).send({
+    //       success: false,
+    //       error: error.message,
+    //     });
+    //   }
+    // });
+
+    // ৪. কমেন্ট ডিলিট
+
+    // delete comment
+    app.delete(
+      "/api/comments/:commentId",
+      verifyToken,
+      checkBlocked,
+      async (req, res) => {
+        await forumCollection.updateOne(
+          { "comments._id": new ObjectId(req.params.commentId) },
+          { $pull: { comments: { _id: new ObjectId(req.params.commentId) } } },
+        );
+        res.send({ success: true });
+      },
+    );
 
     // --- TRAINER & STATS API ---
     app.get("/api/user-stats/:email", async (req, res) => {
@@ -216,6 +451,7 @@ async function run() {
       }
     });
 
+    // trainer apply
     app.post("/api/trainer-application", checkBlocked, async (req, res) => {
       try {
         const { email } = req.body;
@@ -240,39 +476,50 @@ async function run() {
       }
     });
 
-    app.get("/trainer-application", async (req, res) => {
-      try {
-        const applications = await trainerCollection
-          .find({ status: "Pending" })
-          .toArray();
-        res.send(applications);
-      } catch (error) {
-        res.status(500).send({ message: "Error fetching data" });
-      }
-    });
-
-    app.patch("/trainer-application/:id", async (req, res) => {
-      try {
-        const { id } = req.params;
-        const { status, feedback, email } = req.body;
-
-        const result = await trainerCollection.updateOne(
-          { _id: new ObjectId(id) },
-          { $set: { status: status, feedback: feedback } },
-        );
-
-        if (status === "Approved") {
-          await userCollection.updateOne(
-            { email: email },
-            { $set: { role: "trainer" } },
-          );
+    app.get(
+      "/trainer-application",
+      verifyToken,
+      adminVerify,
+      async (req, res) => {
+        try {
+          const applications = await trainerCollection
+            .find({ status: "Pending" })
+            .toArray();
+          res.send(applications);
+        } catch (error) {
+          res.status(500).send({ message: "Error fetching data" });
         }
+      },
+    );
 
-        res.send({ success: true, modifiedCount: result.modifiedCount });
-      } catch (error) {
-        res.status(500).send({ success: false, message: "Update Failed" });
-      }
-    });
+    // admin trainer select
+    app.patch(
+      "/trainer-application/:id",
+      verifyToken,
+      adminVerify,
+      async (req, res) => {
+        try {
+          const { id } = req.params;
+          const { status, feedback, email } = req.body;
+
+          const result = await trainerCollection.updateOne(
+            { _id: new ObjectId(id) },
+            { $set: { status: status, feedback: feedback } },
+          );
+
+          if (status === "Approved") {
+            await userCollection.updateOne(
+              { email: email },
+              { $set: { role: "trainer" } },
+            );
+          }
+
+          res.send({ success: true, modifiedCount: result.modifiedCount });
+        } catch (error) {
+          res.status(500).send({ success: false, message: "Update Failed" });
+        }
+      },
+    );
 
     // BOOKING DATA
     app.get("/api/my-bookings/:email", async (req, res) => {
@@ -288,7 +535,7 @@ async function run() {
       }
     });
 
-    // index.js এ এই অংশটুকু যোগ করুন
+    // all user data
     app.get("/api/user-class-status", async (req, res) => {
       try {
         const { email, classId } = req.query;
@@ -314,8 +561,8 @@ async function run() {
       }
     });
 
-    // --- নতুন বুকিং API (পেমেন্ট কনফার্ম হওয়ার পর এটি কল হবে) ---
-    app.post("/api/bookings", checkBlocked, async (req, res) => {
+    // after payment confirmed
+    app.post("/api/bookings", verifyToken, checkBlocked, async (req, res) => {
       try {
         const { userId, classId, email, className, paymentIntent, amount } =
           req.body;
@@ -369,29 +616,33 @@ async function run() {
     });
 
     // --- FAVORITES & BOOKING ---
-    app.post("/api/favorites/toggle", checkBlocked, async (req, res) => {
-      try {
-        const { email, classId, classData } = req.body;
-        const query = { email, classId };
-        const existing = await favoritesCollection.findOne(query);
-        if (existing) {
-          await favoritesCollection.deleteOne(query);
-          return res.send({ status: "removed" });
-        } else {
-          await favoritesCollection.insertOne({
-            email,
-            classId,
-            classData,
-            addedAt: new Date(),
-          });
-          return res.send({ status: "added" });
+    app.post(
+      "/api/favorites/toggle",
+      verifyToken,
+      checkBlocked,
+      async (req, res) => {
+        try {
+          const { email, classId, classData } = req.body;
+          const query = { email, classId };
+          const existing = await favoritesCollection.findOne(query);
+          if (existing) {
+            await favoritesCollection.deleteOne(query);
+            return res.send({ status: "removed" });
+          } else {
+            await favoritesCollection.insertOne({
+              email,
+              classId,
+              classData,
+              addedAt: new Date(),
+            });
+            return res.send({ status: "added" });
+          }
+        } catch (error) {
+          res.status(500).send({ error: "Failed to toggle" });
         }
-      } catch (error) {
-        res.status(500).send({ error: "Failed to toggle" });
-      }
-    });
+      },
+    );
 
-    // --- CLASSES API ---
     // Get all
     app.get("/api/classes", async (req, res) => {
       // ফ্রন্টএন্ড থেকে আসা ডাটাগুলো রিসিভ করা (limit 9 করা হয়েছে)
@@ -427,15 +678,20 @@ async function run() {
       }
     });
 
-    // সব ক্লাসের জন্য (Admin Only)
-    app.get("/api/admin/classes", async (req, res) => {
-      try {
-        const classes = await classesCollection.find().toArray();
-        res.send(classes);
-      } catch (error) {
-        res.status(500).send({ message: "Error fetching classes" });
-      }
-    });
+    // all class (Admin Only)
+    app.get(
+      "/api/admin/classes",
+      verifyToken,
+      adminVerify,
+      async (req, res) => {
+        try {
+          const classes = await classesCollection.find().toArray();
+          res.send(classes);
+        } catch (error) {
+          res.status(500).send({ message: "Error fetching classes" });
+        }
+      },
+    );
 
     //get id api
     app.get("/api/classes/:id", async (req, res) => {
@@ -458,18 +714,30 @@ async function run() {
       }
     });
 
-    app.post("/api/classes", checkBlocked, async (req, res) => {
-      const result = await classesCollection.insertOne(req.body);
-      res.send(result);
-    });
+    app.post(
+      "/api/classes",
+      verifyToken,
+      trainerVerify,
+      checkBlocked,
+      async (req, res) => {
+        const result = await classesCollection.insertOne(req.body);
+        res.send(result);
+      },
+    );
 
-    app.patch("/api/classes/status/:id", checkBlocked, async (req, res) => {
-      const result = await classesCollection.updateOne(
-        { _id: new ObjectId(req.params.id) },
-        { $set: { status: req.body.status } },
-      );
-      res.send(result);
-    });
+    app.patch(
+      "/api/classes/status/:id",
+      verifyToken,
+      adminVerify,
+      checkBlocked,
+      async (req, res) => {
+        const result = await classesCollection.updateOne(
+          { _id: new ObjectId(req.params.id) },
+          { $set: { status: req.body.status } },
+        );
+        res.send(result);
+      },
+    );
 
     app.delete("/api/classes/:id", checkBlocked, async (req, res) => {
       const result = await classesCollection.deleteOne({
@@ -479,12 +747,18 @@ async function run() {
     });
 
     // --- TRAINER MY CLASSES ---
-    app.get("/api/trainer/my-classes/:email", async (req, res) => {
-      const myClasses = await classesCollection
-        .find({ trainerEmail: req.params.email })
-        .toArray();
-      res.json({ classes: myClasses });
-    });
+    app.get(
+      "/api/trainer/my-classes/:email",
+      verifyToken,
+      trainerVerify,
+      checkBlocked,
+      async (req, res) => {
+        const myClasses = await classesCollection
+          .find({ trainerEmail: req.params.email })
+          .toArray();
+        res.json({ classes: myClasses });
+      },
+    );
 
     // admin trainer manage
 
@@ -506,20 +780,25 @@ async function run() {
       }
     });
 
-    // ট্রেইনার থেকে ইউজার করার জন্য (Demote)
-    app.patch("/api/users/role/:email", async (req, res) => {
-      try {
-        const { email } = req.params;
-        const { role } = req.body;
-        const result = await userCollection.updateOne(
-          { email: email },
-          { $set: { role: role } },
-        );
-        res.send({ success: result.modifiedCount > 0 });
-      } catch (error) {
-        res.status(500).send({ success: false });
-      }
-    });
+    // promote and demote
+    app.patch(
+      "/api/users/role/:email",
+      verifyToken,
+      adminVerify,
+      async (req, res) => {
+        try {
+          const { email } = req.params;
+          const { role } = req.body;
+          const result = await userCollection.updateOne(
+            { email: email },
+            { $set: { role: role } },
+          );
+          res.send({ success: result.modifiedCount > 0 });
+        } catch (error) {
+          res.status(500).send({ success: false });
+        }
+      },
+    );
 
     //trainer api
     app.get("/api/check-trainer-status/:email", async (req, res) => {
@@ -529,35 +808,40 @@ async function run() {
       res.json(status || {});
     });
 
-    // ২. ট্রেইনার অ্যাপ্লিকেশন সাবমিশন (Logic Updated)
-    app.post("/api/trainer-application", async (req, res) => {
-      try {
-        const { email } = req.body;
-        const existing = await trainerCollection.findOne({ email });
+    // submit application trainer
+    app.post(
+      "/api/trainer-application",
+      verifyToken,
+      checkBlocked,
+      async (req, res) => {
+        try {
+          const { email } = req.body;
+          const existing = await trainerCollection.findOne({ email });
 
-        // যদি অলরেডি পেন্ডিং থাকে, তবে রিজেক্ট করুন
-        if (existing && existing.status === "Pending") {
-          return res
-            .status(400)
-            .json({ error: "Already applied. Please wait." });
+          // যদি অলরেডি পেন্ডিং থাকে, তবে রিজেক্ট করুন
+          if (existing && existing.status === "Pending") {
+            return res
+              .status(400)
+              .json({ error: "Already applied. Please wait." });
+          }
+
+          // যদি রিজেক্টেড হয়, আগেরটি ডিলিট করে নতুনটা ইনসার্ট করুন
+          if (existing && existing.status === "Rejected") {
+            await trainerCollection.deleteOne({ email });
+          }
+
+          const application = {
+            ...req.body,
+            status: "Pending",
+            appliedAt: new Date(),
+          };
+          const result = await trainerCollection.insertOne(application);
+          res.status(201).send(result);
+        } catch (error) {
+          res.status(500).send({ error: "Server error" });
         }
-
-        // যদি রিজেক্টেড হয়, আগেরটি ডিলিট করে নতুনটা ইনসার্ট করুন
-        if (existing && existing.status === "Rejected") {
-          await trainerCollection.deleteOne({ email });
-        }
-
-        const application = {
-          ...req.body,
-          status: "Pending",
-          appliedAt: new Date(),
-        };
-        const result = await trainerCollection.insertOne(application);
-        res.status(201).send(result);
-      } catch (error) {
-        res.status(500).send({ error: "Server error" });
-      }
-    });
+      },
+    );
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
