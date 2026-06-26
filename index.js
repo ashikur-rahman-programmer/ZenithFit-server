@@ -304,24 +304,18 @@ async function run() {
     });
 
     //trainer forum create post
-    app.post(
-      "/api/forum",
-      verifyToken,
-      trainerVerify,
-      checkBlocked,
-      async (req, res) => {
-        try {
-          const postData = req.body;
-          const result = await forumCollection.insertOne({
-            ...postData,
-            createdAt: new Date(),
-          });
-          res.status(201).send(result);
-        } catch (error) {
-          res.status(500).send({ error: "Failed to publish post" });
-        }
-      },
-    );
+    app.post("/api/forum", verifyToken, checkBlocked, async (req, res) => {
+      try {
+        const postData = req.body;
+        const result = await forumCollection.insertOne({
+          ...postData,
+          createdAt: new Date(),
+        });
+        res.status(201).send(result);
+      } catch (error) {
+        res.status(500).send({ error: "Failed to publish post" });
+      }
+    });
 
     // delete
     app.delete("/api/forum/:id", checkBlocked, async (req, res) => {
@@ -478,7 +472,7 @@ async function run() {
     // trainer apply
     app.post(
       "/api/trainer-application",
-      trainerVerify,
+      verifyToken,
       checkBlocked,
       async (req, res) => {
         try {
